@@ -1,4 +1,4 @@
-name: Build Voice Assistant APK
+name: Build Android APK
 
 on:
   push:
@@ -7,7 +7,18 @@ on:
 
 jobs:
   build:
+    name: Build (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: flutter-3.35.4
+            flutter-version: "3.35.4"
+            patch: false
+          - name: flutter-latest
+            flutter-version: ""
+            patch: true
     steps:
       - uses: actions/checkout@v4
 
@@ -18,8 +29,8 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.35.4"
           channel: stable
+          flutter-version: ${{ matrix.flutter-version }}
           cache: true
 
       - name: Extract source zip (agar repo me sirf zip hai)
@@ -36,52 +47,44 @@ jobs:
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
 
-      # Android ka scaffold Flutter khud banata hai, isliye Gradle versions ki tension nahi.
-      - name: Generate android project and patch it
+      - name: Clean machine-specific files
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          if [ ! -d android ]; then
-            flutter create --platforms=android --project-name voice_assistant --org com.myassistant _gen
-            cp -r _gen/android ./android
-            rm -rf _gen
+          rm -f android/local.properties
+          rm -rf android/.gradle android/.kotlin
+
+      - name: Update Gradle and Android Gradle Plugin (latest build only)
+        if: ${{ matrix.patch }}
+        working-directory: ${{ steps.proj.outputs.dir }}/android
+        run: |
+          sed -i 's#gradle-[0-9.]*-all.zip#gradle-8.14.3-all.zip#; s#gradle-[0-9.]*-bin.zip#gradle-8.14.3-bin.zip#' gradle/wrapper/gradle-wrapper.properties
+          sed -i 's#id("com.android.application") version "[0-9.]*"#id("com.android.application") version "8.11.1"#' settings.gradle.kts || true
+          grep -n "distributionUrl" gradle/wrapper/gradle-wrapper.properties || true
+
+      - name: Restore signing key (optional)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/release-key.jks
+            printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=release-key.jks\n' "$STORE_PASSWORD" "$KEY_PASSWORD" "$KEY_ALIAS" > android/key.properties
+            echo "Signed release build"
+          else
+            echo "Secrets nahi mile, debug-key se sign hogi"
           fi
-          python3 tools/patch_android.py .
 
-      - name: Download offline speech models (Hindi + Indian English, small)
+      - name: flutter pub get (lock file ki dikkat ho toh dobara try)
         working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          mkdir -p assets/models
-          curl -L --fail -o assets/models/vosk-model-small-hi-0.22.zip https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
-          curl -L --fail -o assets/models/vosk-model-small-en-in-0.4.zip https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip
-          ls -la assets/models
+        run: flutter pub get || (rm -f pubspec.lock && flutter pub get)
 
-      # Purane plugins me kabhi namespace nahi hota (AGP 8 error deta hai), ye usse bacha leta hai.
-      - name: Gradle namespace safety net
-        run: |
-          mkdir -p ~/.gradle/init.d
-          cat > ~/.gradle/init.d/namespace-fix.gradle <<'EOG'
-          allprojects {
-            afterEvaluate { p ->
-              if (p.hasProperty('android') && p.android.hasProperty('namespace') && p.android.namespace == null) {
-                def pkg = null
-                try {
-                  def mf = p.android.sourceSets.main.manifest.srcFile
-                  if (mf.exists()) { pkg = new XmlSlurper().parse(mf).@package.text() }
-                } catch (Exception e) { }
-                if (!pkg) { pkg = p.group.toString() }
-                p.android.namespace = pkg
-              }
-            }
-          }
-          EOG
-
-      - run: flutter pub get
-        working-directory: ${{ steps.proj.outputs.dir }}
-
-      - run: flutter build apk --release --no-shrink
+      - run: flutter build apk --release
         working-directory: ${{ steps.proj.outputs.dir }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: voice-assistant-apk
+          name: apk-${{ matrix.name }}
           path: ${{ steps.proj.outputs.dir }}/build/app/outputs/flutter-apk/app-release.apk
