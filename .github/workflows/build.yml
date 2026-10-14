@@ -31,16 +31,22 @@ jobs:
           flutter-version: ${{ matrix.flutter-version }}
           cache: true
 
-      - name: Extract source zip (agar repo me sirf zip hai)
+      - name: Extract source zip
         run: |
           Z=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
-          if [ -n "$Z" ] && [ ! -f pubspec.yaml ]; then unzip -q -o "$Z" -d src_extracted; fi
+          if [ -n "$Z" ] && [ ! -f pubspec.yaml ]; then
+            unzip -q -o "$Z" -d src_extracted
+          fi
 
       - name: Find Flutter project folder
         id: proj
         run: |
           P=$(find . -maxdepth 3 -name pubspec.yaml -not -path "*/.*" | head -n 1)
-          if [ -z "$P" ]; then echo "pubspec.yaml nahi mili. Repo ki files:"; ls -R | head -50; exit 1; fi
+          if [ -z "$P" ]; then
+            echo "pubspec.yaml nahi mili"
+            ls -R | head -50
+            exit 1
+          fi
           DIR=$(dirname "$P")
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
@@ -48,22 +54,21 @@ jobs:
       - name: Use maintained Vosk fork
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          if grep -qE '^\s*vosk_flutter(_service)?:' pubspec.yaml; then
-            sed -i -E 's/^(\s*)vosk_flutter(_service)?:.*/\1vosk_flutter_service: ^0.1.0/' pubspec.yaml
-            grep -rlE "package:vosk_flutter(_service)?/vosk_flutter(_service)?\.dart" lib | xargs -r sed -i -E "s#package:vosk_flutter(_service)?/vosk_flutter(_service)?\.dart#package:vosk_flutter_service/vosk_flutter_service.dart#"
+          if grep -qE '^[[:space:]]*vosk_flutter(_service)?:' pubspec.yaml; then
+            sed -i -E 's/^([[:space:]]*)vosk_flutter(_service)?:.*/\1vosk_flutter_service: ^0.1.0/' pubspec.yaml
+            grep -rlE 'package:vosk_flutter(_service)?/' lib 2>/dev/null | xargs -r sed -i -E 's#package:vosk_flutter(_service)?/[a-z_]+\.dart#package:vosk_flutter_service/vosk_flutter_service.dart#'
             rm -f pubspec.lock
             echo "Using vosk_flutter_service"
           else
-            echo "Vosk use nahi hota"
+            echo "Vosk not used"
           fi
 
-      - name: Make sure Android scaffold exists
+      - name: Ensure Android scaffold exists
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           rm -f android/local.properties
           rm -rf android/.gradle android/.kotlin
           if [ ! -f android/build.gradle ] && [ ! -f android/build.gradle.kts ]; then
-            echo "Android project missing, Flutter se bana raha hoon"
             NAME=$(grep -m1 '^name:' pubspec.yaml | awk '{print $2}')
             mkdir -p /tmp/gen
             flutter create --platforms=android --project-name "$NAME" --org com.myassistant /tmp/gen/app
@@ -71,22 +76,25 @@ jobs:
             cp -r /tmp/gen/app/android ./android
           fi
 
-      - name: Patch AndroidManifest, proguard (JNA/AWT), and disable R8 minify
+      - name: Patch manifest, proguard, disable minify
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          python3 - <<'PY'
+          python3 << 'PY'
           import re, os
 
-          # --- AndroidManifest ---
           p = "android/app/src/main/AndroidManifest.xml"
           s = open(p, encoding="utf-8").read()
-          perms = ('\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>'
-                   '\n    <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>')
+          perms = (
+              "\n    <uses-permission android:name=\"android.permission.RECORD_AUDIO\"/>"
+              "\n    <uses-permission android:name=\"com.android.alarm.permission.SET_ALARM\"/>"
+          )
           if "RECORD_AUDIO" not in s:
               s = re.sub(r"(<manifest[^>]*>)", lambda m: m.group(1) + perms, s, count=1)
-          q = ('\n        <intent><action android:name="android.intent.action.TTS_SERVICE"/></intent>'
-               '\n        <intent><action android:name="android.intent.action.VIEW"/><data android:scheme="https"/></intent>'
-               '\n        <intent><action android:name="android.intent.action.DIAL"/></intent>\n')
+          q = (
+              "\n        <intent><action android:name=\"android.intent.action.TTS_SERVICE\"/></intent>"
+              "\n        <intent><action android:name=\"android.intent.action.VIEW\"/><data android:scheme=\"https\"/></intent>"
+              "\n        <intent><action android:name=\"android.intent.action.DIAL\"/></intent>\n"
+          )
           if "TTS_SERVICE" not in s:
               if "</queries>" in s:
                   s = s.replace("</queries>", q + "    </queries>", 1)
@@ -95,20 +103,19 @@ jobs:
           s = re.sub(r'android:label="[^"]*"', 'android:label="Voice Assistant"', s, count=1)
           open(p, "w", encoding="utf-8").write(s)
 
-          # --- ProGuard rules for JNA / missing AWT on Android ---
-          rules = """# JNA / Vosk – Android has no java.awt.*
--dontwarn java.awt.**
--dontwarn javax.swing.**
--dontwarn com.sun.jna.**
--keep class com.sun.jna.** { *; }
--keep class * implements com.sun.jna.** { *; }
--keepclassmembers class * extends com.sun.jna.** { public *; }
--keep class org.vosk.** { *; }
-"""
+          rules = (
+              "# JNA / Vosk - Android has no java.awt.*\n"
+              "-dontwarn java.awt.**\n"
+              "-dontwarn javax.swing.**\n"
+              "-dontwarn com.sun.jna.**\n"
+              "-keep class com.sun.jna.** { *; }\n"
+              "-keep class * implements com.sun.jna.** { *; }\n"
+              "-keepclassmembers class * extends com.sun.jna.** { public *; }\n"
+              "-keep class org.vosk.** { *; }\n"
+          )
           os.makedirs("android/app", exist_ok=True)
           open("android/app/proguard-rules.pro", "w", encoding="utf-8").write(rules)
 
-          # --- Disable minify/shrink so R8 does not fail on missing AWT ---
           for gradle in ("android/app/build.gradle", "android/app/build.gradle.kts"):
               if not os.path.isfile(gradle):
                   continue
@@ -142,7 +149,7 @@ jobs:
       - name: Gradle namespace fix for old plugins
         run: |
           mkdir -p ~/.gradle/init.d
-          cat > ~/.gradle/init.d/namespace-fix.gradle <<'EOG'
+          cat > ~/.gradle/init.d/namespace-fix.gradle << 'EOG'
           allprojects { p ->
             p.plugins.withId('com.android.library') {
               def ext = p.extensions.findByName('android')
@@ -159,7 +166,7 @@ jobs:
           }
           EOG
 
-      - name: Download offline speech models (Hindi + Indian English, small)
+      - name: Download offline speech models
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           if grep -q vosk_flutter pubspec.yaml; then
@@ -173,11 +180,11 @@ jobs:
         working-directory: ${{ steps.proj.outputs.dir }}
         run: flutter pub get || (rm -f pubspec.lock && flutter pub get)
 
-      - name: Fix Vosk import to the real library file
+      - name: Fix Vosk imports
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           if grep -q vosk_flutter_service pubspec.yaml; then
-            python3 - <<'PY'
+            python3 << 'PY'
           import glob, json, os, re
           cfg = json.load(open(".dart_tool/package_config.json"))
           pkg = [p for p in cfg["packages"] if p["name"] == "vosk_flutter_service"][0]
