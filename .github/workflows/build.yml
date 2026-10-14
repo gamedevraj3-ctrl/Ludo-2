@@ -158,14 +158,15 @@ jobs:
           }
           EOG
 
-      - name: Download offline speech models
+      - name: Download only small Hindi speech model
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           if grep -q vosk_flutter pubspec.yaml; then
             mkdir -p assets/models
-            curl -L --fail -o assets/models/vosk-model-small-hi-0.22.zip https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
-            curl -L --fail -o assets/models/vosk-model-small-en-in-0.4.zip https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip
-            ls -la assets/models
+            # sirf Hindi small model (~45MB) — English hata diya size kam karne ke liye
+            curl -L --fail -o assets/models/vosk-model-small-hi-0.22.zip \
+              https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+            ls -lh assets/models
           fi
 
       - name: flutter pub get
@@ -196,18 +197,19 @@ jobs:
           PY
           fi
 
-      - name: Build arm64-v8a release APK
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: flutter build apk --release --no-shrink --target-platform android-arm64
-
-      - name: List APK outputs
+      - name: Build only arm64-v8a APK
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          find build/app/outputs -name "*.apk" -type f -ls || true
+          flutter build apk --release --no-shrink --target-platform android-arm64
+          # single clean apk copy
+          mkdir -p /tmp/out
+          APK=$(find build/app/outputs -name "*.apk" -type f | head -n 1)
+          if [ -z "$APK" ]; then echo "APK nahi mili"; exit 1; fi
+          cp "$APK" /tmp/out/VoiceAssistant-arm64-v8a.apk
+          ls -lh /tmp/out/VoiceAssistant-arm64-v8a.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: voice-assistant-arm64-v8a
-          path: |
-            ${{ steps.proj.outputs.dir }}/build/app/outputs/flutter-apk/*.apk
-            ${{ steps.proj.outputs.dir }}/build/app/outputs/apk/release/*.apk
+          name: VoiceAssistant-arm64-v8a
+          path: /tmp/out/VoiceAssistant-arm64-v8a.apk
+          if-no-files-found: error
