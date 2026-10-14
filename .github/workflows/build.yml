@@ -48,13 +48,13 @@ jobs:
       - name: Use maintained Vosk fork
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          if grep -qE '^\s*vosk_flutter:' pubspec.yaml; then
-            sed -i -E 's/^(\s*)vosk_flutter:.*/\1vosk_flutter_service: ^0.1.0/' pubspec.yaml
-            grep -rl "package:vosk_flutter/vosk_flutter.dart" lib | xargs -r sed -i "s#package:vosk_flutter/vosk_flutter.dart#package:vosk_flutter_service/vosk_flutter.dart#"
+          if grep -qE '^\s*vosk_flutter(_service)?:' pubspec.yaml; then
+            sed -i -E 's/^(\s*)vosk_flutter(_service)?:.*/\1vosk_flutter_service: ^0.1.0/' pubspec.yaml
+            grep -rlE "package:vosk_flutter(_service)?/vosk_flutter(_service)?\.dart" lib | xargs -r sed -i -E "s#package:vosk_flutter(_service)?/vosk_flutter(_service)?\.dart#package:vosk_flutter_service/vosk_flutter_service.dart#"
             rm -f pubspec.lock
-            echo "Switched to vosk_flutter_service"
+            echo "Using vosk_flutter_service"
           else
-            echo "Already on the fork (ya Vosk use nahi hota)"
+            echo "Vosk use nahi hota"
           fi
 
       - name: Make sure Android scaffold exists
@@ -129,6 +129,30 @@ jobs:
       - name: flutter pub get
         working-directory: ${{ steps.proj.outputs.dir }}
         run: flutter pub get || (rm -f pubspec.lock && flutter pub get)
+
+      - name: Fix Vosk import to the real library file
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          if grep -q vosk_flutter_service pubspec.yaml; then
+            python3 - <<'PY'
+          import glob, json, os, re
+          cfg = json.load(open(".dart_tool/package_config.json"))
+          pkg = [p for p in cfg["packages"] if p["name"] == "vosk_flutter_service"][0]
+          root = pkg["rootUri"]
+          path = root[len("file://"):] if root.startswith("file://") else os.path.normpath(os.path.join(".dart_tool", root))
+          lib = os.path.join(path, pkg.get("packageUri", "lib/"))
+          files = sorted(f for f in os.listdir(lib) if f.endswith(".dart"))
+          print("library files:", files)
+          pick = next((n for n in ("vosk_flutter_service.dart", "vosk_flutter.dart") if n in files), files[0])
+          print("using:", pick)
+          for f in glob.glob("lib/**/*.dart", recursive=True):
+              s = open(f, encoding="utf-8").read()
+              n = re.sub(r"package:vosk_flutter(_service)?/[a-z_]+\.dart", "package:vosk_flutter_service/" + pick, s)
+              if n != s:
+                  open(f, "w", encoding="utf-8").write(n)
+                  print("fixed import in", f)
+          PY
+          fi
 
       - run: flutter build apk --release --no-shrink
         working-directory: ${{ steps.proj.outputs.dir }}
