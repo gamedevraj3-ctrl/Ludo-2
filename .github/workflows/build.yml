@@ -71,11 +71,13 @@ jobs:
             cp -r /tmp/gen/app/android ./android
           fi
 
-      - name: Patch AndroidManifest (mic, alarm, queries) and proguard
+      - name: Patch AndroidManifest, proguard (JNA/AWT), and disable R8 minify
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           python3 - <<'PY'
-          import re
+          import re, os
+
+          # --- AndroidManifest ---
           p = "android/app/src/main/AndroidManifest.xml"
           s = open(p, encoding="utf-8").read()
           perms = ('\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>'
@@ -92,8 +94,49 @@ jobs:
                   s = s.replace("</manifest>", "    <queries>" + q + "    </queries>\n</manifest>", 1)
           s = re.sub(r'android:label="[^"]*"', 'android:label="Voice Assistant"', s, count=1)
           open(p, "w", encoding="utf-8").write(s)
-          open("android/app/proguard-rules.pro", "w").write("-keep class com.sun.jna.* { *; }\n-keepclassmembers class * extends com.sun.jna.* { public *; }\n")
-          print("manifest patched")
+
+          # --- ProGuard rules for JNA / missing AWT on Android ---
+          rules = """# JNA / Vosk – Android has no java.awt.*
+-dontwarn java.awt.**
+-dontwarn javax.swing.**
+-dontwarn com.sun.jna.**
+-keep class com.sun.jna.** { *; }
+-keep class * implements com.sun.jna.** { *; }
+-keepclassmembers class * extends com.sun.jna.** { public *; }
+-keep class org.vosk.** { *; }
+"""
+          os.makedirs("android/app", exist_ok=True)
+          open("android/app/proguard-rules.pro", "w", encoding="utf-8").write(rules)
+
+          # --- Disable minify/shrink so R8 does not fail on missing AWT ---
+          for gradle in ("android/app/build.gradle", "android/app/build.gradle.kts"):
+              if not os.path.isfile(gradle):
+                  continue
+              g = open(gradle, encoding="utf-8").read()
+              if gradle.endswith(".kts"):
+                  g = re.sub(r"isMinifyEnabled\s*=\s*true", "isMinifyEnabled = false", g)
+                  g = re.sub(r"isShrinkResources\s*=\s*true", "isShrinkResources = false", g)
+                  if "isMinifyEnabled" not in g and "release" in g:
+                      g = re.sub(
+                          r"(release\s*\{)",
+                          r"\1\n            isMinifyEnabled = false\n            isShrinkResources = false",
+                          g,
+                          count=1,
+                      )
+              else:
+                  g = re.sub(r"minifyEnabled\s+true", "minifyEnabled false", g)
+                  g = re.sub(r"shrinkResources\s+true", "shrinkResources false", g)
+                  if "minifyEnabled" not in g and "release" in g:
+                      g = re.sub(
+                          r"(release\s*\{)",
+                          r"\1\n            minifyEnabled false\n            shrinkResources false",
+                          g,
+                          count=1,
+                      )
+              open(gradle, "w", encoding="utf-8").write(g)
+              print("patched", gradle)
+
+          print("manifest + proguard + minify patched")
           PY
 
       - name: Gradle namespace fix for old plugins
@@ -154,8 +197,9 @@ jobs:
           PY
           fi
 
-      - run: flutter build apk --release --no-shrink
+      - name: Build release APK
         working-directory: ${{ steps.proj.outputs.dir }}
+        run: flutter build apk --release --no-shrink
 
       - uses: actions/upload-artifact@v4
         with:
