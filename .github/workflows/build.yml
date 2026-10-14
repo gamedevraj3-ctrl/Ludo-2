@@ -45,6 +45,18 @@ jobs:
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project folder: $DIR"
 
+      - name: Use maintained Vosk fork
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          if grep -qE '^\s*vosk_flutter:' pubspec.yaml; then
+            sed -i -E 's/^(\s*)vosk_flutter:.*/\1vosk_flutter_service: ^0.1.0/' pubspec.yaml
+            grep -rl "package:vosk_flutter/vosk_flutter.dart" lib | xargs -r sed -i "s#package:vosk_flutter/vosk_flutter.dart#package:vosk_flutter_service/vosk_flutter.dart#"
+            rm -f pubspec.lock
+            echo "Switched to vosk_flutter_service"
+          else
+            echo "Already on the fork (ya Vosk use nahi hota)"
+          fi
+
       - name: Make sure Android scaffold exists
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
